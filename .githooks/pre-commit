@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Main pre-commit hook that runs all validation checks
+
+# Get the directory of this script
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Run submodule checks
+if [ -f "$HOOK_DIR/check-submodules.sh" ]; then
+    "$HOOK_DIR/check-submodules.sh"
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+fi
+
+# Add other pre-commit checks here as needed
+# Example: linting, formatting, tests, etc.
+
+exit 0

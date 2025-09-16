@@ -1,0 +1,147 @@
+name: Submodule Validation
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+jobs:
+  validate-submodules:
+    name: Validate Submodules
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          
+      - name: Check submodule initialization
+        run: |
+          echo "🔍 Checking submodule initialization..."
+          git submodule status --recursive
+          
+          # Ensure all submodules are initialized
+          UNINITIALIZED=$(git submodule status --recursive | grep '^-' || true)
+          if [ -n "$UNINITIALIZED" ]; then
+            echo "❌ Error: Uninitialized submodules found:"
+            echo "$UNINITIALIZED"
+            exit 1
+          fi
+          echo "✅ All submodules are initialized"
+          
+      - name: Check for modified submodules
+        run: |
+          echo "🔍 Checking for uncommitted changes in submodules..."
+          
+          # Check each submodule for uncommitted changes
+          git submodule foreach --recursive '
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "❌ Error: Submodule $name has uncommitted changes:"
+              git status --short
+              exit 1
+            fi
+          '
+          echo "✅ All submodules are clean"
+          
+      - name: Verify submodule commits exist
+        run: |
+          echo "🔍 Verifying submodule commits are accessible..."
+          
+          # Try to fetch all submodule commits to ensure they're accessible
+          git submodule foreach --recursive '
+            echo "Checking $name at $(git rev-parse HEAD)"
+            git fetch origin $(git rev-parse HEAD) || {
+              echo "⚠️  Warning: Commit $(git rev-parse HEAD) not found in origin for $name"
+              echo "This might indicate unpushed commits in the submodule"
+            }
+          '
+          
+      - name: Check submodule branches
+        run: |
+          echo "🔍 Checking submodule branch tracking..."
+          
+          git submodule foreach --recursive '
+            BRANCH=$(git symbolic-ref -q HEAD || echo "detached")
+            if [ "$BRANCH" = "detached" ]; then
+              echo "⚠️  Warning: Submodule $name is in detached HEAD state"
+            else
+              echo "✅ Submodule $name is on branch: ${BRANCH#refs/heads/}"
+            fi
+          '
+          
+      - name: Validate .gitmodules
+        run: |
+          echo "🔍 Validating .gitmodules file..."
+          
+          # Check that all submodules in .gitmodules actually exist
+          while IFS= read -r path; do
+            if [ ! -d "$path" ]; then
+              echo "❌ Error: Submodule path $path defined in .gitmodules but directory doesn't exist"
+              exit 1
+            fi
+          done < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+          
+          echo "✅ .gitmodules validation passed"
+          
+      - name: Check for large files in submodules
+        run: |
+          echo "🔍 Checking for large files in submodules..."
+          
+          # Find files larger than 100MB in submodules
+          LARGE_FILES=$(find apps/n8n apps/twenty apps/delta-dms apps/paperless-gpt \
+                        -type f -size +100M 2>/dev/null || true)
+          
+          if [ -n "$LARGE_FILES" ]; then
+            echo "⚠️  Warning: Large files found in submodules:"
+            echo "$LARGE_FILES" | while read -r file; do
+              echo "  - $file ($(du -h "$file" | cut -f1))"
+            done
+            echo "Consider using Git LFS for these files"
+          else
+            echo "✅ No large files found in submodules"
+          fi
+
+  submodule-updates:
+    name: Check for Submodule Updates
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          
+      - name: Checkout base branch
+        run: |
+          git fetch origin ${{ github.event.pull_request.base.ref }}
+          
+      - name: Check for submodule updates
+        run: |
+          echo "🔍 Checking for submodule updates in this PR..."
+          
+          # Get list of changed submodules
+          CHANGED_SUBMODULES=$(git diff origin/${{ github.event.pull_request.base.ref }}..HEAD --submodule=log | grep "^Submodule" | awk '{print $2}' | sort -u || true)
+          
+          if [ -n "$CHANGED_SUBMODULES" ]; then
+            echo "📦 This PR updates the following submodules:"
+            echo "$CHANGED_SUBMODULES" | while read -r submodule; do
+              echo ""
+              echo "Submodule: $submodule"
+              git diff origin/${{ github.event.pull_request.base.ref }}..HEAD --submodule=log -- "$submodule"
+            done
+            
+            echo ""
+            echo "⚠️  Please ensure:"
+            echo "  1. Submodule updates are intentional"
+            echo "  2. Submodule commits are pushed to their respective remotes"
+            echo "  3. Update documentation if submodule versions are critical"
+          else
+            echo "✅ No submodule updates in this PR"
+          fi
